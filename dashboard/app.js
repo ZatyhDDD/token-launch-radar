@@ -1,14 +1,15 @@
 // Token Radar's dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and
 // renders the ranked board, a filterable table, a per-protocol detail drawer with the model's own
-// inputs and the protocol's farm plan, the calibration the model was read from, and a sandbox that
-// re-runs the model live. No network: every byte it shows is in data.js.
+// inputs and the protocol's farm plan, the regression the model was fit from with its
+// leave-one-out error, and a sandbox that re-runs the model live. No network: every byte it
+// shows is in data.js.
 (function () {
   'use strict';
 
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, watchlistOnly: false, sandbox: { multipleScale: 1, growthWeight: DATA.model.growth_weight } };
+  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, watchlistOnly: false, sandbox: { valueScale: 1 } };
   var sandboxAtDefault = true;
 
   var money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -34,19 +35,15 @@
   }
 
   // The model, as the page runs it: the same arithmetic main.ts uses, so the page can check each
-  // row against board.json. The sandbox scales every multiple and overrides the growth weight,
-  // then re-ranks the board live.
-  function impliedOf(row, model, sandbox) {
-    var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var weight = sandbox ? sandbox.growthWeight : model.growth_weight;
-    var growthMult = 1 + (growth / 100) * weight;
-    var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    var mult = row.multiple * (sandbox ? sandbox.multipleScale : 1);
-    return Math.max(1, Math.round(row.tvl_usd * mult * growthMult * maturity));
+  // row against board.json. The sandbox scales every predicted value, then re-ranks the board live.
+  function impliedOf(row, sandbox) {
+    var cal = DATA.calibration;
+    var scale = sandbox ? sandbox.valueScale : 1;
+    var predicted = Math.exp(cal.intercept + cal.slope * Math.log(row.tvl_usd));
+    return Math.max(1, Math.round(predicted * scale));
   }
   function liveImplied(row) {
-    return sandboxAtDefault ? row.implied_value_usd : impliedOf(row, DATA.model, state.sandbox);
+    return sandboxAtDefault ? row.implied_value_usd : impliedOf(row, state.sandbox);
   }
 
   /** Build an element, set its attributes, and append its children. */
@@ -193,7 +190,7 @@
         el('p', null,
           'The watchlist is the floor: every protocol with at least ', el('b', { text: '$' + Math.round(DATA.floor_usd / 1e6) + 'M' }),
           ' of TVL and no token on record. The early radar adds ', el('b', { text: String(DATA.early_size) }),
-          ' pre-token protocols below that floor. Implied value is a model, not a promise: the multiple is read off the live market, not picked by hand.')
+          ' pre-token protocols below that floor. Implied value is a model, not a promise: a regression fit on the live market, not a number picked by hand.')
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -242,7 +239,7 @@
   /** Download the rows the current filters leave, as a CSV, in the current sort order. */
   function downloadCsv() {
     var list = sortedRows(filteredRows());
-    var head = ['rank', 'protocol', 'category', 'chains', 'tvl_usd', 'change_7d', 'age_days', 'implied_value_usd', 'multiple'];
+    var head = ['rank', 'protocol', 'category', 'chains', 'tvl_usd', 'change_7d', 'age_days', 'implied_value_usd'];
     var lines = [head.join(',')];
     list.forEach(function (r) {
       lines.push([
@@ -253,8 +250,7 @@
         r.tvl_usd,
         r.change_7d === null ? '' : r.change_7d,
         r.age_days === null ? '' : r.age_days,
-        liveImplied(r),
-        r.multiple
+        liveImplied(r)
       ].join(','));
     });
     var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
@@ -348,7 +344,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking, and their market-cap/TVL ratios are what calibrate it.' }),
+          el('caption', { class: 'sub', text: 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking, and their market caps are what the regression is fit on.' }),
           el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Status' }), el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'TVL' }), el('th', { scope: 'col', text: '7d' }), el('th', { scope: 'col', text: 'Market cap' }), el('th', { scope: 'col', text: 'Token' }))),
           tbody
         )
@@ -357,57 +353,48 @@
   }
 
   function modelPanel() {
-    var m = DATA.model;
     var cal = DATA.calibration;
-    var calibRows = cal.categories.map(function (c) {
-      return el('tr', null,
-        el('td', { text: c.category }),
-        el('td', { class: 'num', text: c.multiple.toFixed(3) }),
-        el('td', { class: 'num', text: String(c.comparables) })
-      );
-    });
-    calibRows.push(el('tr', null,
-      el('td', { text: 'All live protocols (fallback)' }),
-      el('td', { class: 'num', text: cal.global_multiple.toFixed(3) }),
-      el('td', { class: 'num', text: String(cal.global_comparables) })
-    ));
+    var loo = 'Leave-one-out on the ' + cal.live_count + ' live protocols: each one predicted from the other ' + (cal.live_count - 1) + ', so the error is out-of-sample, not the fit admiring itself.';
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { class: 'sub', text: 'Every row is scored by one regression, fit at run time on the snapshot\u2019s own live-token protocols. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ', el('b', { text: 'multiple' }), ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( exp( ', el('b', { text: String(cal.intercept) }), ' + ', el('b', { text: String(cal.slope) }), ' x ln(tvl_usd) ) )'
       ),
-      el('p', { class: 'sub', text: 'The multiple is the market\u2019s own price for a dollar of TVL: the median market-cap/TVL of the live protocols in the same category, when five or more of them trade, else the median over all ' + cal.global_comparables + ' live protocols in the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
+      el('p', { class: 'sub', text: 'The market does not pay a flat multiple for a dollar of TVL: the ratio falls as protocols grow, so a single median multiple overstates the giants and understates the small. The regression reads that size effect off the live market. At $100M of TVL the fitted ratio is ' + cal.ratio_at_100m + '; at $1B it is ' + cal.ratio_at_1b + '. Growth, age and category were tested and left out: each added noise in the backtest, so the model keeps only TVL.' }),
       el('table', { class: 'calib' },
-        el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Multiple' }), el('th', { text: 'Live comparables' }))),
-        el('tbody', null, calibRows)
-      )
+        el('thead', null, el('tr', null, el('th', { text: 'Fit' }), el('th', { text: 'Value' }))),
+        el('tbody', null,
+          el('tr', null, el('td', { text: 'Live protocols the regression is fit on' }), el('td', { class: 'num', text: String(cal.live_count) })),
+          el('tr', null, el('td', { text: 'Intercept (log market cap at log TVL 0)' }), el('td', { class: 'num', text: String(cal.intercept) })),
+          el('tr', null, el('td', { text: 'Slope (log market cap per log TVL)' }), el('td', { class: 'num', text: String(cal.slope) })),
+          el('tr', null, el('td', { text: 'Median absolute log error, leave-one-out' }), el('td', { class: 'num', text: String(cal.loo_median_log_error) })),
+          el('tr', null, el('td', { text: 'Predictions within 2x of the true market cap' }), el('td', { class: 'num', text: Math.round(cal.loo_within_2x * 100) + '%' })),
+          el('tr', null, el('td', { text: 'Predictions within 3x of the true market cap' }), el('td', { class: 'num', text: Math.round(cal.loo_within_3x * 100) + '%' }))
+        )
+      ),
+      el('p', { class: 'sub', text: loo })
     );
   }
 
   function sandboxPanel() {
-    var m = DATA.model;
-    var multRange = el('input', { type: 'range', min: '0.5', max: '2', step: '0.05', value: String(state.sandbox.multipleScale), 'aria-label': 'Scale every multiple' });
-    var multOut = el('output', { text: state.sandbox.multipleScale.toFixed(2) + 'x' });
-    multRange.addEventListener('input', function () { state.sandbox.multipleScale = parseFloat(multRange.value); multOut.textContent = state.sandbox.multipleScale.toFixed(2) + 'x'; syncSandbox(); });
-    var growthRange = el('input', { type: 'range', min: '0', max: '1', step: '0.05', value: String(state.sandbox.growthWeight), 'aria-label': 'Growth weight' });
-    var growthOut = el('output', { text: state.sandbox.growthWeight.toFixed(2) });
-    growthRange.addEventListener('input', function () { state.sandbox.growthWeight = parseFloat(growthRange.value); growthOut.textContent = state.sandbox.growthWeight.toFixed(2); syncSandbox(); });
-    var reset = el('button', { class: 'button', type: 'button', text: 'Reset to the model', onclick: function () { state.sandbox.multipleScale = 1; state.sandbox.growthWeight = m.growth_weight; multRange.value = '1'; growthRange.value = String(m.growth_weight); multOut.textContent = '1.00x'; growthOut.textContent = m.growth_weight.toFixed(2); syncSandbox(); } });
+    var scaleRange = el('input', { type: 'range', min: '0.5', max: '2', step: '0.05', value: String(state.sandbox.valueScale), 'aria-label': 'Scale every predicted value' });
+    var scaleOut = el('output', { text: state.sandbox.valueScale.toFixed(2) + 'x' });
+    scaleRange.addEventListener('input', function () { state.sandbox.valueScale = parseFloat(scaleRange.value); scaleOut.textContent = state.sandbox.valueScale.toFixed(2) + 'x'; syncSandbox(); });
+    var reset = el('button', { class: 'button', type: 'button', text: 'Reset to the model', onclick: function () { state.sandbox.valueScale = 1; scaleRange.value = '1'; scaleOut.textContent = '1.00x'; syncSandbox(); } });
     return el('section', { class: 'panel sandbox' },
       el('h2', { text: 'Model sandbox' }),
-      el('p', { class: 'sub', text: 'Change the model and the board re-ranks live, with the same arithmetic the page checks each row against. Nothing here changes board.json: the model above is the entry.' }),
+      el('p', { class: 'sub', text: 'Scale every predicted value and the board re-ranks live, with the same arithmetic the page checks each row against. Nothing here changes board.json: the model above is the entry.' }),
       el('div', { class: 'sandbox-grid' },
-        el('label', null, 'Multiple scale (every category\u2019s multiple, times this)', multRange, multOut),
-        el('label', null, 'Growth weight (how much seven-day growth matters)', growthRange, growthOut)
+        el('label', null, 'Value scale (every implied value, times this)', scaleRange, scaleOut)
       ),
       el('div', null, reset),
-      el('p', { class: 'note', text: sandboxAtDefault ? 'At the model\u2019s own settings: multiples as calibrated, growth weight ' + m.growth_weight + '.' : 'Sandbox active: the implied values below are re-run with these settings.' })
+      el('p', { class: 'note', text: sandboxAtDefault ? 'At the model\u2019s own settings: the regression as fit, scale 1.00x.' : 'Sandbox active: the implied values below are re-run with these settings.' })
     );
   }
 
   function syncSandbox() {
-    sandboxAtDefault = state.sandbox.multipleScale === 1 && state.sandbox.growthWeight === DATA.model.growth_weight;
+    sandboxAtDefault = state.sandbox.valueScale === 1;
     render();
   }
 
@@ -421,21 +408,21 @@
     writeHash();
     dialog.textContent = '';
     var steps = farmSteps(row);
-    var recomputed = impliedOf(row, DATA.model, null);
+    var recomputed = impliedOf(row, null);
     // The detail shows the live numbers: the model's own when the sandbox is at its settings,
     // the sandbox's re-run when it is not, so the equation always matches the value it ends on.
-    var shownGrowth = Math.min(DATA.model.growth_cap, Math.max(DATA.model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var shownWeight = sandboxAtDefault ? DATA.model.growth_weight : state.sandbox.growthWeight;
-    var shownGrowthMult = Math.round((1 + (shownGrowth / 100) * shownWeight) * 1e4) / 1e4;
-    var shownMultiple = Math.round(row.multiple * (sandboxAtDefault ? 1 : state.sandbox.multipleScale) * 1e4) / 1e4;
-    var shownImplied = sandboxAtDefault ? row.implied_value_usd : impliedOf(row, DATA.model, state.sandbox);
+    var cal = DATA.calibration;
+    var shownScale = sandboxAtDefault ? 1 : state.sandbox.valueScale;
+    var shownImplied = sandboxAtDefault ? row.implied_value_usd : impliedOf(row, state.sandbox);
+    var logTvl = Math.log(row.tvl_usd);
+    var logMcap = cal.intercept + cal.slope * logTvl;
     var eqRows = [
       el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
       el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
       el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-      el('div', null, el('span', { text: 'Multiple (' + row.multiple_source + ', ' + row.comparables + ' live)' }), el('b', { class: 'num', text: String(shownMultiple) })),
-      el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(shownGrowthMult) })),
-      el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+      el('div', null, el('span', { text: 'ln(TVL)' }), el('b', { class: 'num', text: logTvl.toFixed(2) })),
+      el('div', null, el('span', { text: 'Intercept + slope x ln(TVL)' }), el('b', { class: 'num', text: cal.intercept + ' + ' + cal.slope + ' x ' + logTvl.toFixed(2) + ' = ' + logMcap.toFixed(2) })),
+      el('div', null, el('span', { text: 'Regression fit on' }), el('b', { class: 'num', text: cal.live_count + ' live protocols' })),
       el('div', { class: 'total' }, el('span', { text: sandboxAtDefault ? 'Implied value' : 'Sandbox value' }), el('b', { class: 'num', text: fmtUsd(shownImplied) }))
     ];
     if (!sandboxAtDefault) eqRows.push(el('div', null, el('span', { text: 'Model value (board.json)' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })));
