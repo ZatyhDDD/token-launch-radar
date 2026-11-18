@@ -325,7 +325,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       comparables: s.comparables,
       age_days: s.age,
     },
-    farm_steps: farmSteps(s.p, s.age).map(stepText),
+    farm_steps: farmSteps(s.p, s.age, s.implied).map(stepText),
   }));
 }
 
@@ -337,6 +337,23 @@ export function stepText(step: FarmStep): string {
   if (s.length > 600) s = `${s.slice(0, 596)}...`;
   if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
   return s;
+}
+
+/** A dollar figure, shortened past a thousand, formatted exactly the way the dashboard formats it. */
+const moneyFmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+function fmtUsd(n: number): string {
+  if (!isFinite(n)) return 'n/a';
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$${Math.round(n / 1e3)}K`;
+  return moneyFmt.format(n);
+}
+
+/** A percent with its sign, formatted exactly the way the dashboard formats it. */
+function fmtPct(n: number): string {
+  if (!isFinite(n)) return 'n/a';
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
 /** The first chain a protocol names, or a neutral phrase. */
@@ -378,11 +395,51 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
+/** The weekly step, read off the protocol's own 7-day change. */
+function growthStep(p: SnapshotProtocol): string {
+  if (p.change_7d === null) return `No 7-day change is recorded for ${p.name}. Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and judge the trend from next week's TVL.`;
+  if (p.change_7d > 0) return `TVL rose ${fmtPct(p.change_7d)} in the last 7 days. Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, while the growth holds; if it turns negative for two weeks, stop adding.`;
+  if (p.change_7d < 0) return `TVL fell ${fmtPct(p.change_7d)} in the last 7 days. Make one qualifying action this week, such as a deposit, a borrow, a swap or a vote, then wait a week before adding more.`;
+  return `TVL was flat over the last 7 days. Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and that is enough to stay active.`;
+}
+
+/** The hold step, read off how long the protocol has run without a token. */
+function holdStep(p: SnapshotProtocol, age: number | null, hold: number): string {
+  if (age === null) return `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot. Its listing date is not recorded, so ${hold} days is the safe default.`;
+  return `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot. ${p.name} has run ${age} days without a token, so a ${hold}-day hold is still early in its life.`;
+}
+
+/** The chain step: a second chain gets half the capital, a single chain keeps the whole position. */
+function chainStep(p: SnapshotProtocol, capital: number): FarmStep {
+  if (p.chains.length >= 2) {
+    const half = Math.max(10, Math.round(capital / 2));
+    return {
+      text: `${p.name} also runs on ${p.chains[1]!}, so repeat the deposit there with $${half}, half the first position, so the activity shows on two chains, not one.`,
+      cost: `$${half} of capital and about $4 of gas`,
+      time: '15 minutes to set up',
+    };
+  }
+  if (p.chains.length === 1) {
+    return {
+      text: `${p.name} runs only on ${p.chains[0]!}, so all of the activity counts on that one chain. Keep the whole position there instead of splitting it.`,
+      cost: 'nothing extra',
+      time: '5 minutes to check',
+    };
+  }
+  return {
+    text: `${p.name} names no chain in the snapshot, so do the whole position on the chain its app opens on and note which one in the farm log.`,
+    cost: 'nothing extra',
+    time: '5 minutes to check',
+  };
+}
+
 /**
- * A protocol's farm plan: eight steps, each an action with a cost and a time. The plan is derived
- * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * A protocol's farm plan: eight steps, each an action with a cost and a time. Every step is
+ * derived from the protocol's own record — its TVL, its 7-day change, its chains, its age and
+ * its implied value — so two protocols never get the same plan unless their records match.
+ * No protocol name is ever special-cased.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
+export function farmSteps(p: SnapshotProtocol, age: number | null, implied: number): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
@@ -394,32 +451,28 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '5 minutes',
     },
     {
-      text: action,
+      text: `${action} ${p.name} holds ${fmtUsd(p.tvl_usd)} of TVL, so the $${capital} is a small slice of it and can exit in one transaction.`,
       cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
+      text: growthStep(p),
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
+      text: holdStep(p, age, hold),
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
+    chainStep(p, capital),
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
-      cost: 'no fee to check, and never pay to claim',
-      time: '10 minutes',
-    },
-    {
-      text: `Once a month, check the protocol's TVL and your position; if TVL falls by more than a fifth in a week, pause new deposits until you know why.`,
+      text: `Once a month, check ${p.name}'s TVL against the ${fmtUsd(p.tvl_usd)} in the last snapshot; if it falls by more than a fifth in a week, pause new deposits until you know why.`,
       cost: 'nothing to check',
       time: '10 minutes a month',
     },
     {
-      text: `Before the token launches, check the protocol's own announcements for the claim window and the eligibility rules; a claim that asks for a fee or a seed phrase is a scam.`,
+      text: `Before the token launches, check ${p.name}'s own announcements for the claim window and the eligibility rules, and claim only from the link it publishes. At an implied ${fmtUsd(implied)} the claim is worth chasing, but a claim that asks for a fee or a seed phrase is a scam.`,
       cost: 'no fee to check',
       time: '10 minutes',
     },

@@ -69,8 +69,9 @@
   }
 
   // The farm plan, derived in the page exactly as main.ts derives it for board.json: category,
-  // chains, TVL and age decide the action, the capital, the hold and every cost and time. No name
-  // is special-cased, so the page's plan and the board's plan are the same plan.
+  // chains, TVL, the 7-day change, age and the implied value decide the action, the capital,
+  // the hold and every cost and time. No name is special-cased, so the page's plan and the
+  // board's plan are the same plan.
   function firstChain(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 250;
@@ -106,18 +107,39 @@
     if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
     return s;
   }
+  function growthStep(p) {
+    if (p.change_7d === null || p.change_7d === undefined) return 'No 7-day change is recorded for ' + p.name + ". Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and judge the trend from next week's TVL.";
+    if (p.change_7d > 0) return 'TVL rose ' + fmtPct(p.change_7d) + ' in the last 7 days. Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, while the growth holds; if it turns negative for two weeks, stop adding.';
+    if (p.change_7d < 0) return 'TVL fell ' + fmtPct(p.change_7d) + ' in the last 7 days. Make one qualifying action this week, such as a deposit, a borrow, a swap or a vote, then wait a week before adding more.';
+    return 'TVL was flat over the last 7 days. Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and that is enough to stay active.';
+  }
+  function holdStep(p, age, hold) {
+    if (age === null || age === undefined) return 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot. Its listing date is not recorded, so ' + hold + ' days is the safe default.';
+    return 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot. ' + p.name + ' has run ' + age + ' days without a token, so a ' + hold + '-day hold is still early in its life.';
+  }
+  function chainStep(p, capital) {
+    if (p.chains && p.chains.length >= 2) {
+      var half = Math.max(10, Math.round(capital / 2));
+      return { text: p.name + ' also runs on ' + p.chains[1] + ', so repeat the deposit there with $' + half + ', half the first position, so the activity shows on two chains, not one.', cost: '$' + half + ' of capital and about $4 of gas', time: '15 minutes to set up' };
+    }
+    if (p.chains && p.chains.length === 1) {
+      return { text: p.name + ' runs only on ' + p.chains[0] + ', so all of the activity counts on that one chain. Keep the whole position there instead of splitting it.', cost: 'nothing extra', time: '5 minutes to check' };
+    }
+    return { text: p.name + ' names no chain in the snapshot, so do the whole position on the chain its app opens on and note which one in the farm log.', cost: 'nothing extra', time: '5 minutes to check' };
+  }
   function farmSteps(p) {
     var chain = firstChain(p);
     var capital = capitalFor(p);
     var hold = holdFor(p.age_days);
+    var action = actionFor(p, capital, chain);
     return [
       { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: "Once a month, check the protocol's TVL and your position; if TVL falls by more than a fifth in a week, pause new deposits until you know why.", cost: 'nothing to check', time: '10 minutes a month' },
-      { text: "Before the token launches, check the protocol's own announcements for the claim window and the eligibility rules; a claim that asks for a fee or a seed phrase is a scam.", cost: 'no fee to check', time: '10 minutes' },
+      { text: action + ' ' + p.name + ' holds ' + fmtUsd(p.tvl_usd) + ' of TVL, so the $' + capital + ' is a small slice of it and can exit in one transaction.', cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
+      { text: growthStep(p), cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: holdStep(p, p.age_days, hold), cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      chainStep(p, capital),
+      { text: "Once a month, check " + p.name + "'s TVL against the " + fmtUsd(p.tvl_usd) + " in the last snapshot; if it falls by more than a fifth in a week, pause new deposits until you know why.", cost: 'nothing to check', time: '10 minutes a month' },
+      { text: "Before the token launches, check " + p.name + "'s own announcements for the claim window and the eligibility rules, and claim only from the link it publishes. At an implied " + fmtUsd(p.implied_value_usd) + " the claim is worth chasing, but a claim that asks for a fee or a seed phrase is a scam.", cost: 'no fee to check', time: '10 minutes' },
       { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
     ].map(joinStep);
   }
