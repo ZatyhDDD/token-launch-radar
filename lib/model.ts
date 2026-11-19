@@ -68,7 +68,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The version label the dashboard names and the rules quote. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** How much of a token's implied value the farm assumes goes to depositors, and the T-bill
  *  rate the deposit forgoes while it sits in the position. */
@@ -120,6 +120,7 @@ export interface Calibration {
   oos_curve: OosResult;
   oos_sector: OosResult;
   wf_windows: WalkForwardWindow[];
+  calibration_svg: string;
 }
 
 /** The verdict a farm earns from the odds it needs: FARM pays at low launch odds, MARGINAL
@@ -421,6 +422,61 @@ function sectorPredict(train: SnapshotProtocol[], p: SnapshotProtocol): number {
  * boundary and tests on the ones listed in that year, so a term that only fits the past
  * cannot hide: it has to predict the future.
  */
+/** One leave-one-out prediction: a live protocol's true market cap and the value the
+ *  model gives it when it is held out of the fit. */
+export interface LooPoint {
+  actual: number;
+  predicted: number;
+}
+
+/** The calibration scatter as an SVG string: predicted implied value against the true
+ *  market cap, both on a log scale, one dot per live protocol, each predicted from the
+ *  other 118. The diagonal is a perfect prediction and the dashed lines are the 2x band. */
+export function calibrationSvg(points: LooPoint[]): string {
+  const logs = points.flatMap((q) => [Math.log10(q.actual), Math.log10(q.predicted)]);
+  const lo = Math.floor(Math.min(...logs));
+  const hi = Math.ceil(Math.max(...logs));
+  const W = 640;
+  const H = 380;
+  const PL = 56;
+  const PR = 16;
+  const PT = 14;
+  const PB = 38;
+  const X = (v: number): number => PL + ((v - lo) / (hi - lo)) * (W - PL - PR);
+  const Y = (v: number): number => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
+  const money = (e: number): string => {
+    if (e >= 9) return `$${10 ** (e - 9)}B`;
+    if (e >= 6) return `$${10 ** (e - 6)}M`;
+    if (e >= 3) return `$${10 ** e / 1000}K`;
+    return `$${10 ** e}`;
+  };
+  const d = Math.log10(2);
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Predicted implied value against actual market cap, leave-one-out">`;
+  for (let e = lo; e <= hi; e++) {
+    const gx = X(e).toFixed(1);
+    const gy = Y(e).toFixed(1);
+    s += `<line x1="${gx}" y1="${PT}" x2="${gx}" y2="${H - PB}" stroke="var(--border)" stroke-width="1"/>`;
+    s += `<line x1="${PL}" y1="${gy}" x2="${W - PR}" y2="${gy}" stroke="var(--border)" stroke-width="1"/>`;
+    s += `<text x="${gx}" y="${H - PB + 18}" fill="var(--muted)" font-size="11" text-anchor="middle">${money(e)}</text>`;
+    s += `<text x="${PL - 8}" y="${(+gy + 4).toFixed(1)}" fill="var(--muted)" font-size="11" text-anchor="end">${money(e)}</text>`;
+  }
+  s += `<line x1="${X(lo).toFixed(1)}" y1="${Y(lo + d).toFixed(1)}" x2="${X(hi - d).toFixed(1)}" y2="${Y(hi).toFixed(1)}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="4 4"/>`;
+  s += `<line x1="${X(lo + d).toFixed(1)}" y1="${Y(lo).toFixed(1)}" x2="${X(hi).toFixed(1)}" y2="${Y(hi - d).toFixed(1)}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="4 4"/>`;
+  s += `<line x1="${X(lo).toFixed(1)}" y1="${Y(lo).toFixed(1)}" x2="${X(hi).toFixed(1)}" y2="${Y(hi).toFixed(1)}" stroke="var(--accent)" stroke-width="1.5"/>`;
+  for (const q of points) {
+    const ax = Math.log10(q.actual);
+    const py = Math.log10(q.predicted);
+    const within2 = Math.abs(py - ax) <= d + 1e-9;
+    s += `<circle cx="${X(ax).toFixed(1)}" cy="${Y(py).toFixed(1)}" r="3.5" fill="${within2 ? 'var(--accent)' : 'var(--amber)'}" fill-opacity="0.85"/>`;
+  }
+  s += `<circle cx="72" cy="24" r="3.5" fill="var(--accent)"/><text x="80" y="28" fill="var(--muted)" font-size="11">within 2x</text>`;
+  s += `<circle cx="150" cy="24" r="3.5" fill="var(--amber)"/><text x="158" y="28" fill="var(--muted)" font-size="11">outside 2x</text>`;
+  s += `<text x="${((PL + W - PR) / 2).toFixed(1)}" y="${H - 4}" fill="var(--muted)" font-size="11" text-anchor="middle">Actual market cap (log scale)</text>`;
+  s += `<text x="14" y="${((PT + H - PB) / 2).toFixed(1)}" fill="var(--muted)" font-size="11" text-anchor="middle" transform="rotate(-90 14 ${((PT + H - PB) / 2).toFixed(1)})">Predicted implied value (log scale)</text>`;
+  s += `</svg>`;
+  return s;
+}
+
 export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Calibration {
   const live = fittable(snapshot);
   if (live.length < model.min_comparables) {
@@ -480,6 +536,11 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Ca
   const oosSector = oos(sectorPredict);
   const sectorWindows = wfOf(sectorPredict).windows;
   const ratioAt = (tvl: number): number => round4(Math.exp(line.intercept + line.slope * Math.log(tvl)) / tvl);
+  const looPairs: LooPoint[] = [];
+  for (let i = 0; i < live.length; i++) {
+    const rest = live.slice(0, i).concat(live.slice(i + 1));
+    looPairs.push({ actual: live[i]!.mcap_usd!, predicted: sectorPredict(rest, live[i]!) });
+  }
   return {
     intercept: round4(line.intercept),
     slope: round4(line.slope),
@@ -495,6 +556,7 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Ca
     oos_curve: oosCurve,
     oos_sector: oosSector,
     wf_windows: sectorWindows,
+    calibration_svg: calibrationSvg(looPairs),
   };
 }
 

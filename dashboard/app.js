@@ -596,6 +596,9 @@
           el('thead', null, el('tr', null, el('th', { text: 'Listed in' }), el('th', { text: 'Train' }), el('th', { text: 'Test' }), el('th', { text: 'Median miss' }), el('th', { text: 'Within 2x' }), el('th', { text: 'Within 3x' }))),
           wfBody
         ),
+        el('h3', { text: 'Calibration' }),
+        el('div', { html: cal.calibration_svg }),
+        el('p', { class: 'sub', text: 'Each dot is one live protocol predicted from the other 118: green is within 2x of its true market cap, amber is further out. The diagonal is a perfect prediction, the dashed lines the 2x band.' }),
         el('h3', { text: 'What the farm assumes' }),
         el('p', { class: 'sub', text: 'Deposit: the larger of TVL / 10,000 and three times the gas divided by the slice per dollar, between $500 and $5,000. Slice: 10% of the implied value goes to depositors, split pro-rata by TVL. Gas: $3.00 a transaction on Ethereum, $0.05 on Solana, $0.15 elsewhere. T-bill: 4% a year on the deposit. Verdict: FARM when the farm pays at 10% launch odds or less, MARGINAL at 25% or less, else SKIP; a farm is capped at MARGINAL when the 7-day TVL fell more than 30%. The deposit itself is not a cost: it comes back when the position unwinds.' }),
         el('h3', { text: 'Weak parts, stated plainly' }),
