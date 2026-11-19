@@ -178,3 +178,15 @@ tbody tr[data-selected="true"] { background: rgba(45, 212, 167, 0.08); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+.kpi { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--step-2); padding: var(--step-4) 0; border-top: 1px solid var(--border); }
+.kpi-item { display: grid; gap: 2px; }
+.kpi-item span { color: var(--muted); font-size: 12px; }
+.kpi-item b { font-family: var(--font-num); font-size: 15px; font-weight: 500; }
+.verdict { display: inline-block; padding: 2px 8px; border-radius: 20px; font-family: var(--font-num); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; }
+.verdict-farm { color: rgb(6, 40, 31); background: var(--accent); }
+.verdict-marginal { color: rgb(46, 32, 4); background: var(--amber); }
+.verdict-skip { color: rgb(248, 113, 113); background: rgba(248, 113, 113, 0.12); }
+.stack { display: grid; gap: var(--step-4); }
+.model h3 { margin-top: var(--step-3); }
+@media (max-width: 900px) { .kpi { grid-template-columns: repeat(3, 1fr); } }

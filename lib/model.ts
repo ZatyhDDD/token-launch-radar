@@ -1,26 +1,36 @@
-// Radar-3, the token radar's model: a sealed snapshot of the protocol universe in, a ranked
+// Radar-5, the token radar's model: a sealed snapshot of the protocol universe in, a ranked
 // board out.
 //
 // What the board holds: every slug on the snapshot's watchlist (the floor, never a ceiling) plus
 // every other pre-token protocol the house's own exclusion rule keeps. A protocol leaves the board
 // when its token already trades in another form — a wrapped, staked or bridged product, a
 // versioned pool, an exchange — because ranking it would rank a token that already has a price.
+// The protocols the board sets aside are not hidden: the dashboard names every one of the 758,
+// ranked, already trading, or set aside with its reason.
 //
 // What a row is worth: a log-log regression fit at run time on the snapshot's own live-token
-// protocols. The market does not pay a flat multiple for a dollar of TVL: the ratio falls as
-// protocols grow, so a single median multiple overstates the giants and understates the small.
-// The regression reads that size effect straight off the live market instead of assuming it.
-// No protocol name is ever special-cased, and no growth, age or category adjustment is applied:
-// a leave-one-out backtest on the snapshot's live protocols showed each of those adds noise
-// (median log error 1.21 for the plain regression against 1.53 for a per-category median and
-// 1.58 for the median with growth and maturity multipliers), so the model keeps only TVL.
+// protocols, plus a sector offset shrunk toward the global line. The market does not pay a flat
+// multiple for a dollar of TVL: the ratio falls as protocols grow, so a single median multiple
+// overstates the giants and understates the small. The regression reads that size effect straight
+// off the live market instead of assuming it, and the sector term reads what each category's
+// traded protocols actually fetch above or below the curve. No protocol name is ever
+// special-cased. Growth and age tilts were tested and left out: each loses on leave-one-out, so
+// the model keeps only TVL and the shrunk sector term.
 //
-//   log(mcap) = intercept + slope x log(tvl)        (fit on the live protocols, CEX excluded)
-//   implied   = max(1, round(exp(intercept + slope x log(tvl_usd))))
+//   log(mcap) = intercept + slope x log(tvl) + sector offset   (fit on the live protocols, CEX excluded)
+//   implied   = max(1, round(exp(intercept + slope x log(tvl) + sector offset)))
 //
-// The fit is validated in the same run by leave-one-out: each live protocol is predicted from
-// the other 118, and the median absolute log error plus the share of predictions within 2x and
-// 3x are reported with the calibration, so the dashboard states how far the model can be trusted.
+// The fit is validated in the same run, twice over: leave-one-out over the live protocols, and a
+// walk-forward test that fits only on protocols listed before a year boundary and tests on the
+// ones listed in that year, so the reported error is an honest out-of-sample read, not the fit
+// admiring itself. A flat median multiple is scored the same way, so the table shows what each
+// term earns. Two hundred seeded bootstrap refits give every row a P25-P75 band.
+//
+// What a farm is worth: each row carries the full economics of farming it — a deposit sized by
+// formula, the slice of implied value that deposit would earn if 10% of the token goes to
+// depositors, the gas and the T-bill the position forgoes, the net, the break-even launch odds
+// and a verdict. A farm pays only when the token launches, so the verdict is set by the odds
+// the farm needs, not by the size of the slice.
 
 /** One protocol entry, exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -45,37 +55,91 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The model's constants: only the floor on how many live protocols a fit needs. */
+/** The model's constants: only the floor on how many live protocols a fit needs, and the
+ *  shrinkage that keeps a small category's offset near the global line. */
 export interface ModelConstants {
   min_comparables: number;
+  sector_shrinkage: number;
 }
 
 export const MODEL: ModelConstants = {
   min_comparables: 10,
+  sector_shrinkage: 8,
 };
 
 /** The version label the dashboard names and the rules quote. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-5';
 
-/** How many live-token protocols the dashboard's Live token view carries, by market cap. */
-export const LIVE_ROWS = 24;
+/** How much of a token's implied value the farm assumes goes to depositors, and the T-bill
+ *  rate the deposit forgoes while it sits in the position. */
+export const AIRDROP_SHARE = 0.1;
+export const TBILL_RATE = 0.04;
+/** The deposit formula's floor and ceiling, in dollars. */
+export const DEPOSIT_MIN = 500;
+export const DEPOSIT_MAX = 5000;
+
+/** One out-of-sample result: leave-one-out and walk-forward, side by side. */
+export interface OosResult {
+  loo_median_log_error: number;
+  loo_within_2x: number;
+  loo_within_3x: number;
+  wf_median_log_error: number;
+  wf_within_2x: number;
+  wf_within_3x: number;
+  wf_test_count: number;
+}
+
+/** One walk-forward window: fit on protocols listed before the cutoff, test on the ones listed
+ *  in the cutoff year. */
+export interface WalkForwardWindow {
+  cutoff: string;
+  train_count: number;
+  test_count: number;
+  median_log_error: number;
+  within_2x: number;
+  within_3x: number;
+}
 
 /**
  * The whole calibration: the regression the live market implies, how many live protocols
- * set it, and the leave-one-out error that says how far the fit can be trusted.
+ * set it, the sector offsets, and the out-of-sample errors that say how far the fit can be
+ * trusted — a flat multiple, the size curve alone, and the curve with the sector term.
  */
 export interface Calibration {
   intercept: number;
   slope: number;
   live_count: number;
+  sector_offsets: Record<string, number>;
+  sector_categories: number;
   loo_median_log_error: number;
   loo_within_2x: number;
   loo_within_3x: number;
   ratio_at_100m: number;
   ratio_at_1b: number;
+  oos_flat: OosResult;
+  oos_curve: OosResult;
+  oos_sector: OosResult;
+  wf_windows: WalkForwardWindow[];
 }
 
-/** One farm step: what to do, what it costs, and how long it takes. */
+/** The verdict a farm earns from the odds it needs: FARM pays at low launch odds, MARGINAL
+ *  needs a likely launch, SKIP needs odds no launch can offer. */
+export type Verdict = 'FARM' | 'MARGINAL' | 'SKIP';
+
+/** A protocol's farm economics, all in dollars except the odds and the hours. */
+export interface FarmEconomics {
+  deposit_usd: number;
+  slice_usd: number;
+  gas_usd: number;
+  tbill_usd: number;
+  net_usd: number;
+  break_even: number;
+  per_hour_usd: number;
+  hours: number;
+  verdict: Verdict;
+}
+
+/** One step as a single string: its action, then its cost and time, inside 20..600 characters. */
 export interface FarmStep {
   text: string;
   cost: string;
@@ -103,7 +167,12 @@ export interface BoardRow {
     slope: number;
     comparables: number;
     age_days: number | null;
+    sector_offset: number;
+    curve_value_usd: number;
+    implied_lo_usd: number;
+    implied_hi_usd: number;
   };
+  farm: FarmEconomics;
   farm_steps: string[];
 }
 
@@ -123,6 +192,19 @@ export interface RadarRow {
   intercept: number;
   slope: number;
   comparables: number;
+  sector_offset: number;
+  curve_value_usd: number;
+  implied_lo_usd: number;
+  implied_hi_usd: number;
+  deposit_usd: number;
+  slice_usd: number;
+  gas_usd: number;
+  tbill_usd: number;
+  net_usd: number;
+  break_even: number;
+  per_hour_usd: number;
+  hours: number;
+  verdict: Verdict;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value. */
@@ -136,7 +218,25 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
-/** Everything the dashboard renders: the board, the live set, the calibration and the model. */
+/** A protocol the board sets aside, with the reason it is not ranked. */
+export interface ExcludedProtocol {
+  slug: string;
+  name: string;
+  category: string | null;
+  reason: string;
+}
+
+/** The ledger that accounts for every protocol in the snapshot. */
+export interface Ledger {
+  total: number;
+  ranked: number;
+  live: number;
+  cex: number;
+  excluded: number;
+}
+
+/** Everything the dashboard renders: the board, the live set, the set-aside set, the
+ *  calibration and the model. */
 export interface RadarData {
   as_of: string;
   source: string;
@@ -149,8 +249,11 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  ledger: Ledger;
   rows: RadarRow[];
   live: LiveRow[];
+  excluded: ExcludedProtocol[];
+  cex: LiveRow[];
 }
 
 /** Thrown when the snapshot is not one this model can score. */
@@ -207,6 +310,16 @@ export function isRankable(p: SnapshotProtocol): boolean {
   return true;
 }
 
+/** Why a pre-token protocol is set aside instead of ranked, or null when it is rankable. */
+export function exclusionReason(p: SnapshotProtocol): string | null {
+  if (!isPreToken(p)) return null;
+  if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) return `${p.category} product: its token already trades in another form`;
+  if (VERSIONED.test(p.name)) return 'versioned listing: a pool of another protocol';
+  if (WRAPPED_OR_STAKED.test(p.name)) return 'wrapped or staked product: its token already trades in another form';
+  if (EXCHANGE_NAMES.some((name) => p.name.startsWith(name))) return 'exchange: its token already trades';
+  return null;
+}
+
 /** The live protocols a fit may learn from: a traded token, a positive TVL, not an exchange. */
 function fittable(snapshot: Snapshot): SnapshotProtocol[] {
   return snapshot.protocols.filter(
@@ -236,112 +349,227 @@ function fitLine(points: SnapshotProtocol[]): { intercept: number; slope: number
   return { intercept: my - slope * mx, slope };
 }
 
+/** A category's offset from the global line: its median residual, shrunk toward zero by the
+ *  pseudo-count, so a category with one or two traded protocols barely moves its own rows. */
+function sectorOffsets(points: SnapshotProtocol[], line: { intercept: number; slope: number }, shrink: number): Record<string, number> {
+  const residuals = new Map<string, number[]>();
+  for (const p of points) {
+    if (p.category === null) continue;
+    const list = residuals.get(p.category) ?? [];
+    list.push(Math.log(p.mcap_usd!) - (line.intercept + line.slope * Math.log(p.tvl_usd)));
+    residuals.set(p.category, list);
+  }
+  const out: Record<string, number> = {};
+  for (const [category, values] of residuals) {
+    values.sort((a, b) => a - b);
+    out[category] = (values.length * median(values)) / (values.length + shrink);
+  }
+  return out;
+}
+
+/** The value the size curve alone gives a protocol, before its sector offset. */
+function curveValue(p: SnapshotProtocol, line: { intercept: number; slope: number }): number {
+  return Math.exp(line.intercept + line.slope * Math.log(p.tvl_usd));
+}
+
+/** The value the full model gives a protocol: the curve, shifted by its sector's offset. */
+function modelValue(p: SnapshotProtocol, line: { intercept: number; slope: number }, offsets: Record<string, number>): number {
+  const offset = p.category !== null ? (offsets[p.category] ?? 0) : 0;
+  return curveValue(p, line) * Math.exp(offset);
+}
+
+const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+
+/** The absolute log errors of predicting each point in `test` from a model fit on `train`. */
+function predictErrors(
+  train: SnapshotProtocol[],
+  test: SnapshotProtocol[],
+  predict: (train: SnapshotProtocol[], p: SnapshotProtocol) => number,
+): number[] {
+  return test.map((p) => Math.abs(Math.log(predict(train, p)) - Math.log(p.mcap_usd!)));
+}
+
+/** One out-of-sample result from a list of absolute log errors. */
+function oosFromErrors(errors: number[]): { median: number; within2x: number; within3x: number } {
+  if (errors.length === 0) return { median: 0, within2x: 0, within3x: 0 };
+  const sorted = [...errors].sort((a, b) => a - b);
+  return {
+    median: round4(median(sorted)),
+    within2x: round4(sorted.filter((e) => e <= Math.log(2)).length / sorted.length),
+    within3x: round4(sorted.filter((e) => e <= Math.log(3)).length / sorted.length),
+  };
+}
+
+/** The three predictors the out-of-sample table compares: a flat median multiple, the size
+ *  curve alone, and the curve with its shrunk sector term. Each is fit only on the training
+ *  protocols it is given, so the test protocols are never allowed to teach it. */
+function flatPredict(train: SnapshotProtocol[], p: SnapshotProtocol): number {
+  const ratios = train.map((q) => Math.log(q.mcap_usd!) - Math.log(q.tvl_usd)).sort((a, b) => a - b);
+  return Math.exp(Math.log(p.tvl_usd) + median(ratios));
+}
+function curvePredict(train: SnapshotProtocol[], p: SnapshotProtocol): number {
+  return curveValue(p, fitLine(train));
+}
+function sectorPredict(train: SnapshotProtocol[], p: SnapshotProtocol): number {
+  const line = fitLine(train);
+  return modelValue(p, line, sectorOffsets(train, line, MODEL.sector_shrinkage));
+}
+
 /**
- * The regression the live market implies, fit at run time, with its leave-one-out error.
- * Each live protocol is predicted once from the other live protocols, so the reported error
- * is an honest out-of-sample read, not the fit admiring itself.
+ * The regression the live market implies, fit at run time, with its leave-one-out error and
+ * its walk-forward error. The walk-forward test fits only on protocols listed before a year
+ * boundary and tests on the ones listed in that year, so a term that only fits the past
+ * cannot hide: it has to predict the future.
  */
 export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Calibration {
   const live = fittable(snapshot);
   if (live.length < model.min_comparables) {
     throw new SnapshotError(`snapshot.json has ${live.length} live protocols to fit from: radar needs ${model.min_comparables}`);
   }
-  const { intercept, slope } = fitLine(live);
-  const errors: number[] = [];
-  for (let i = 0; i < live.length; i++) {
-    const rest = live.slice(0, i).concat(live.slice(i + 1));
-    const line = fitLine(rest);
-    const target = live[i]!;
-    const predicted = Math.exp(line.intercept + line.slope * Math.log(target.tvl_usd));
-    errors.push(Math.abs(Math.log(predicted) - Math.log(target.mcap_usd!)));
-  }
-  errors.sort((a, b) => a - b);
-  const looMedian = median(errors);
-  const within2x = errors.filter((e) => e <= Math.log(2)).length / errors.length;
-  const within3x = errors.filter((e) => e <= Math.log(3)).length / errors.length;
-  const ratioAt = (tvl: number): number => round4(Math.exp(intercept + slope * Math.log(tvl)) / tvl);
+  const line = fitLine(live);
+  const offsets = sectorOffsets(live, line, model.sector_shrinkage);
+
+  const looOf = (predict: (train: SnapshotProtocol[], p: SnapshotProtocol) => number): number[] => {
+    const errors: number[] = [];
+    for (let i = 0; i < live.length; i++) {
+      const rest = live.slice(0, i).concat(live.slice(i + 1));
+      errors.push(Math.abs(Math.log(predict(rest, live[i]!)) - Math.log(live[i]!.mcap_usd!)));
+    }
+    return errors;
+  };
+  const dated = live.filter((p) => p.listed_at !== null).sort((x, y) => (x.listed_at! < y.listed_at! ? -1 : x.listed_at! > y.listed_at! ? 1 : 0));
+  const wfOf = (predict: (train: SnapshotProtocol[], p: SnapshotProtocol) => number): { errors: number[]; windows: WalkForwardWindow[] } => {
+    const errors: number[] = [];
+    const windows: WalkForwardWindow[] = [];
+    for (const cutoff of ['2023-01-01', '2024-01-01', '2025-01-01']) {
+      const nextYear = `${Number(cutoff.slice(0, 4)) + 1}-01-01`;
+      const train = dated.filter((p) => p.listed_at! < cutoff);
+      const test = dated.filter((p) => p.listed_at! >= cutoff && p.listed_at! < nextYear);
+      if (train.length < model.min_comparables || test.length === 0) continue;
+      const errs = predictErrors(train, test, predict);
+      const summary = oosFromErrors(errs);
+      windows.push({
+        cutoff,
+        train_count: train.length,
+        test_count: test.length,
+        median_log_error: summary.median,
+        within_2x: summary.within2x,
+        within_3x: summary.within3x,
+      });
+      errors.push(...errs);
+    }
+    return { errors, windows };
+  };
+  const oos = (predict: (train: SnapshotProtocol[], p: SnapshotProtocol) => number): OosResult => {
+    const loo = oosFromErrors(looOf(predict));
+    const wf = wfOf(predict);
+    const wfSummary = oosFromErrors(wf.errors);
+    return {
+      loo_median_log_error: loo.median,
+      loo_within_2x: loo.within2x,
+      loo_within_3x: loo.within3x,
+      wf_median_log_error: wfSummary.median,
+      wf_within_2x: wfSummary.within2x,
+      wf_within_3x: wfSummary.within3x,
+      wf_test_count: wf.errors.length,
+    };
+  };
+
+  const oosFlat = oos(flatPredict);
+  const oosCurve = oos(curvePredict);
+  const oosSector = oos(sectorPredict);
+  const sectorWindows = wfOf(sectorPredict).windows;
+  const ratioAt = (tvl: number): number => round4(Math.exp(line.intercept + line.slope * Math.log(tvl)) / tvl);
   return {
-    intercept: round4(intercept),
-    slope: round4(slope),
+    intercept: round4(line.intercept),
+    slope: round4(line.slope),
     live_count: live.length,
-    loo_median_log_error: round4(looMedian),
-    loo_within_2x: round4(within2x),
-    loo_within_3x: round4(within3x),
+    sector_offsets: Object.fromEntries(Object.entries(offsets).map(([k, v]) => [k, round4(v)])),
+    sector_categories: Object.keys(offsets).length,
+    loo_median_log_error: oosSector.loo_median_log_error,
+    loo_within_2x: oosSector.loo_within_2x,
+    loo_within_3x: oosSector.loo_within_3x,
     ratio_at_100m: ratioAt(100_000_000),
     ratio_at_1b: ratioAt(1_000_000_000),
+    oos_flat: oosFlat,
+    oos_curve: oosCurve,
+    oos_sector: oosSector,
+    wf_windows: sectorWindows,
   };
 }
 
-/** The implied value one protocol gets under `calibration`: the regression's own prediction. */
+/** A small deterministic generator, so the bootstrap refits give the same band every run. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Every board protocol's P25-P75 band over seeded bootstrap refits: each refit resamples the
+ * live protocols with replacement, refits the curve and the sector offsets, and re-scores the
+ * board, so the band says how far the fit itself can move a row's value.
+ */
+export function bootstrapBand(
+  snapshot: Snapshot,
+  calibration: Calibration,
+  protocols: SnapshotProtocol[],
+  refits = 200,
+): Map<string, { lo: number; hi: number }> {
+  const live = fittable(snapshot);
+  const rand = mulberry32(20261119);
+  const samples = new Map<string, number[]>();
+  for (const p of protocols) samples.set(p.slug, []);
+  for (let r = 0; r < refits; r++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < live.length; i++) sample.push(live[Math.floor(rand() * live.length)]!);
+    const refit = fitLine(sample);
+    const refitOffsets = sectorOffsets(sample, refit, MODEL.sector_shrinkage);
+    for (const p of protocols) {
+      samples.get(p.slug)!.push(modelValue(p, refit, refitOffsets));
+    }
+  }
+  const band = new Map<string, { lo: number; hi: number }>();
+  for (const p of protocols) {
+    const values = samples.get(p.slug)!.sort((a, b) => a - b);
+    band.set(p.slug, {
+      lo: Math.max(1, Math.round(values[Math.floor(0.25 * (values.length - 1))]!)),
+      hi: Math.max(1, Math.round(values[Math.floor(0.75 * (values.length - 1))]!)),
+    });
+  }
+  return band;
+}
+
+/** The implied value one protocol gets under `calibration`: the curve, shifted by its sector. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   calibration: Calibration,
-): { implied: number; intercept: number; slope: number; comparables: number; age: number | null } {
+): { implied: number; curve: number; sectorOffset: number; sectorMult: number; intercept: number; slope: number; comparables: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const predicted = Math.exp(calibration.intercept + calibration.slope * Math.log(protocol.tvl_usd));
-  const implied = Math.max(1, Math.min(1_000_000_000_000, Math.round(predicted)));
-  return { implied, intercept: calibration.intercept, slope: calibration.slope, comparables: calibration.live_count, age };
+  const line = { intercept: calibration.intercept, slope: calibration.slope };
+  const curve = curveValue(protocol, line);
+  const offset = protocol.category !== null ? (calibration.sector_offsets[protocol.category] ?? 0) : 0;
+  const implied = Math.max(1, Math.min(1_000_000_000_000, Math.round(curve * Math.exp(offset))));
+  return { implied, curve: Math.max(1, Math.round(curve)), sectorOffset: offset, sectorMult: Math.exp(offset), intercept: calibration.intercept, slope: calibration.slope, comparables: calibration.live_count, age };
 }
 
-/** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const calibration = calibrate(snapshot, model);
-  const chosen = new Map<string, SnapshotProtocol>();
-  // The watchlist is the floor: every slug on it is ranked.
-  const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
-  for (const slug of snapshot.watchlist) {
-    const p = index.get(slug);
-    if (p !== undefined) chosen.set(slug, p);
-  }
-  // The early radar: every other pre-token protocol the exclusion rule keeps, whatever its TVL.
-  for (const p of snapshot.protocols) {
-    if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
-  }
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 
-  const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, calibration);
-    return { p, ...v };
-  });
-  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((s, i) => ({
-    rank: i + 1,
-    slug: s.p.slug,
-    name: s.p.name,
-    category: s.p.category,
-    chains: s.p.chains,
-    tvl_usd: s.p.tvl_usd,
-    change_7d: s.p.change_7d,
-    mcap_usd: s.p.mcap_usd,
-    listed_at: s.p.listed_at,
-    gecko_id: s.p.gecko_id,
-    symbol: s.p.symbol,
-    token_status: 'pre-token',
-    age_days: s.age,
-    implied_value_usd: s.implied,
-    model: {
-      intercept: s.intercept,
-      slope: s.slope,
-      comparables: s.comparables,
-      age_days: s.age,
-    },
-    farm_steps: farmSteps(s.p, s.age, s.implied).map(stepText),
-  }));
-}
-
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-
-/** One step as a single string: its action, then its cost and time, inside 20..600 characters. */
-export function stepText(step: FarmStep): string {
-  let s = `${step.text} Cost: ${step.cost}. Time: ${step.time}.`;
-  if (s.length > 600) s = `${s.slice(0, 596)}...`;
-  if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
-  return s;
+/** A dollar figure with cents when it is small, whole dollars when it is not. */
+const moneyFmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+function fmtDollars(n: number): string {
+  const sign = n < 0 ? '-' : '';
+  const a = Math.abs(n);
+  if (a >= 1000) return `${sign}${moneyFmt.format(a)}`;
+  return `${sign}$${a.toFixed(2)}`;
 }
 
 /** A dollar figure, shortened past a thousand, formatted exactly the way the dashboard formats it. */
-const moneyFmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-
 function fmtUsd(n: number): string {
   if (!isFinite(n)) return 'n/a';
   if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
@@ -361,12 +589,13 @@ function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
-/** How much capital one farm position needs, from the protocol's own TVL. */
-function capitalFor(p: SnapshotProtocol): number {
-  if (p.tvl_usd >= 5_000_000_000) return 250;
-  if (p.tvl_usd >= 1_000_000_000) return 150;
-  if (p.tvl_usd >= 100_000_000) return 100;
-  return 50;
+/** The gas one transaction costs on a chain: Ethereum is dear, Solana is nearly free, the
+ *  layer-2s and the rest sit between them. */
+function gasTx(chain: string | null): number {
+  const c = (chain ?? '').toLowerCase();
+  if (c.includes('ethereum')) return 3.0;
+  if (c.includes('solana')) return 0.05;
+  return 0.15;
 }
 
 /** How long to hold, from the protocol's age: younger protocols get a longer qualifying window. */
@@ -375,6 +604,61 @@ function holdDaysFor(age: number | null): number {
   if (age < 180) return 60;
   if (age < 365) return 45;
   return 30;
+}
+
+/** How much capital one farm position needs: a slice of the protocol's TVL, big enough that
+ *  the slice covers the gas three times over, between $500 and $5,000. */
+function depositFor(p: SnapshotProtocol, implied: number, gas: number): number {
+  const slicePerDollar = (AIRDROP_SHARE * implied) / p.tvl_usd;
+  const needed = slicePerDollar > 0 ? (3 * gas) / slicePerDollar : DEPOSIT_MAX;
+  return Math.round(Math.min(DEPOSIT_MAX, Math.max(DEPOSIT_MIN, p.tvl_usd / 10000, needed)));
+}
+
+/** The overrides the dashboard's what-if controls pass: a fixed deposit, a different share of
+ *  the token for depositors, or a different T-bill rate. The board itself always uses the
+ *  formula values. */
+export interface FarmOptions {
+  deposit?: number;
+  share?: number;
+  tbill?: number;
+}
+
+/**
+ * The whole farm economics of one protocol. The deposit is the formula's, unless the caller
+ * overrides it; the slice is the share of the implied value that deposit would earn if the
+ * token launches; the costs are the gas and the T-bill the deposit forgoes while it sits in
+ * the position. The deposit itself is not a cost: it comes back when the position unwinds.
+ * The verdict is set by the launch odds the farm needs to pay, not by the size of the slice.
+ */
+export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: number, opts: FarmOptions = {}): FarmEconomics {
+  const hold = holdDaysFor(age);
+  const multi = p.chains.length >= 2;
+  const weeks = Math.ceil(hold / 7);
+  const first = gasTx(p.chains.length > 0 ? p.chains[0]! : null);
+  const second = multi ? gasTx(p.chains[1]!) : 0;
+  const gas = first + first + first * weeks + second;
+  const deposit = opts.deposit ?? depositFor(p, implied, gas);
+  const share = opts.share ?? AIRDROP_SHARE;
+  const tbillRate = opts.tbill ?? TBILL_RATE;
+  const slice = (share * implied * deposit) / p.tvl_usd;
+  const tbill = (deposit * tbillRate * hold) / 365;
+  const costs = gas + tbill;
+  const net = slice - costs;
+  const breakEven = slice > 0 ? Math.min(99, costs / slice) : 99;
+  let verdict: Verdict = breakEven <= 0.1 ? 'FARM' : breakEven <= 0.25 ? 'MARGINAL' : 'SKIP';
+  if (verdict === 'FARM' && p.change_7d !== null && p.change_7d < -30) verdict = 'MARGINAL';
+  const hours = (5 + 15 + 10 * weeks + (multi ? 15 : 5) + 10 + 10 + 5) / 60;
+  return {
+    deposit_usd: deposit,
+    slice_usd: round2(slice),
+    gas_usd: round2(gas),
+    tbill_usd: round2(tbill),
+    net_usd: round2(net),
+    break_even: round4(breakEven),
+    per_hour_usd: round2(net / hours),
+    hours: round2(hours),
+    verdict,
+  };
 }
 
 /** The category's one action, in the words a farmer can follow. */
@@ -415,7 +699,7 @@ function chainStep(p: SnapshotProtocol, capital: number): FarmStep {
     const half = Math.max(10, Math.round(capital / 2));
     return {
       text: `${p.name} also runs on ${p.chains[1]!}, so repeat the deposit there with $${half}, half the first position, so the activity shows on two chains, not one.`,
-      cost: `$${half} of capital and about $4 of gas`,
+      cost: `$${half} of capital and about $${gasTx(p.chains[1]!).toFixed(2)} of gas`,
       time: '15 minutes to set up',
     };
   }
@@ -433,31 +717,51 @@ function chainStep(p: SnapshotProtocol, capital: number): FarmStep {
   };
 }
 
+/** The netting step: the deposit, the slice, the costs and the verdict, in one place. */
+function netStep(p: SnapshotProtocol, econ: FarmEconomics): FarmStep {
+  const multi = p.chains.length >= 2;
+  const half = multi ? Math.max(10, Math.round(econ.deposit_usd / 2)) : 0;
+  const costs = econ.gas_usd + econ.tbill_usd;
+  const pays =
+    econ.break_even <= 1
+      ? `pays if the token launches with at least ${(econ.break_even * 100).toFixed(1)}% probability`
+      : `never pays: even if the token launches for certain, the slice of ${fmtDollars(econ.slice_usd)} is below the ${fmtDollars(costs)} it costs to farm`;
+  const text =
+    `Add it up: a ${fmtDollars(econ.deposit_usd)} deposit${multi ? ` plus ${fmtDollars(half)} on ${p.chains[1]!}` : ''} earns a slice of ${fmtDollars(econ.slice_usd)} if the token launches and a tenth of its implied value goes to depositors. ` +
+    `Gas comes to ${fmtDollars(econ.gas_usd)} and the deposit left in place forgoes ${fmtDollars(econ.tbill_usd)} at a 4% T-bill rate, so the net is ${fmtDollars(econ.net_usd)} and the farm ${pays}. Verdict: ${econ.verdict}.`;
+  return {
+    text,
+    cost: `about ${fmtDollars(costs)} all in`,
+    time: `${econ.hours.toFixed(1)} hours of active work`,
+  };
+}
+
 /**
- * A protocol's farm plan: eight steps, each an action with a cost and a time. Every step is
- * derived from the protocol's own record — its TVL, its 7-day change, its chains, its age and
- * its implied value — so two protocols never get the same plan unless their records match.
- * No protocol name is ever special-cased.
+ * A protocol's farm plan: nine steps, each an action with a cost and a time. Every step is
+ * derived from the protocol's own record — its TVL, its 7-day change, its chains, its age, its
+ * implied value and its farm economics — so two protocols never get the same plan unless their
+ * records match. No protocol name is ever special-cased.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null, implied: number): FarmStep[] {
+export function farmSteps(p: SnapshotProtocol, age: number | null, implied: number, econ: FarmEconomics): FarmStep[] {
   const chain = chainOf(p);
-  const capital = capitalFor(p);
+  const capital = econ.deposit_usd;
   const hold = holdDaysFor(age);
   const action = actionFor(p, capital, chain);
+  const first = gasTx(p.chains.length > 0 ? p.chains[0]! : null);
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: `about $${first.toFixed(2)} of gas for the first transaction`,
       time: '5 minutes',
     },
     {
       text: `${action} ${p.name} holds ${fmtUsd(p.tvl_usd)} of TVL, so the $${capital} is a small slice of it and can exit in one transaction.`,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      cost: `$${capital} of capital and about $${first.toFixed(2)} of gas`,
       time: '15 minutes to set up',
     },
     {
       text: growthStep(p),
-      cost: 'about $2 of gas a week',
+      cost: `about $${first.toFixed(2)} of gas a week`,
       time: '10 minutes a week',
     },
     {
@@ -481,15 +785,102 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied: numb
       cost: 'nothing but the log',
       time: '5 minutes',
     },
+    netStep(p, econ),
   ];
 }
 
-/** The live-token protocols, by market cap, for the dashboard's Live token view. */
+/** One step as a single string: its action, then its cost and time, inside 20..600 characters. */
+export function stepText(step: FarmStep): string {
+  let s = `${step.text} Cost: ${step.cost}. Time: ${step.time}.`;
+  if (s.length > 600) s = `${s.slice(0, 596)}...`;
+  if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
+  return s;
+}
+
+/** The protocols the board ranks, strongest first, with ranks 1..n. */
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, calibration: Calibration | null = null): BoardRow[] {
+  const cal = calibration ?? calibrate(snapshot, model);
+  const chosen = new Map<string, SnapshotProtocol>();
+  // The watchlist is the floor: every slug on it is ranked.
+  const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  for (const slug of snapshot.watchlist) {
+    const p = index.get(slug);
+    if (p !== undefined) chosen.set(slug, p);
+  }
+  // The early radar: every other pre-token protocol the exclusion rule keeps, whatever its TVL.
+  for (const p of snapshot.protocols) {
+    if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
+  }
+
+  const protocols = [...chosen.values()];
+  const band = bootstrapBand(snapshot, cal, protocols);
+  const scored = protocols.map((p) => {
+    const v = impliedValue(p, snapshot.as_of, cal);
+    const econ = farmEconomics(p, v.age, v.implied);
+    const b = band.get(p.slug)!;
+    return { p, ...v, econ, band: b };
+  });
+  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  return scored.map((s, i) => ({
+    rank: i + 1,
+    slug: s.p.slug,
+    name: s.p.name,
+    category: s.p.category,
+    chains: s.p.chains,
+    tvl_usd: s.p.tvl_usd,
+    change_7d: s.p.change_7d,
+    mcap_usd: s.p.mcap_usd,
+    listed_at: s.p.listed_at,
+    gecko_id: s.p.gecko_id,
+    symbol: s.p.symbol,
+    token_status: 'pre-token',
+    age_days: s.age,
+    implied_value_usd: s.implied,
+    model: {
+      intercept: s.intercept,
+      slope: s.slope,
+      comparables: s.comparables,
+      age_days: s.age,
+      sector_offset: round4(s.sectorOffset),
+      curve_value_usd: s.curve,
+      implied_lo_usd: s.band.lo,
+      implied_hi_usd: s.band.hi,
+    },
+    farm: s.econ,
+    farm_steps: farmSteps(s.p, s.age, s.implied, s.econ).map(stepText),
+  }));
+}
+
+/** The live-token protocols, by market cap, for the dashboard's Live token view: every one
+ *  of them, not a top slice, so the page accounts for the whole snapshot. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
     .filter((p) => !isPreToken(p) && p.category !== 'CEX')
     .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
-    .slice(0, LIVE_ROWS)
+    .map((p) => ({
+      slug: p.slug,
+      name: p.name,
+      category: p.category,
+      chains: p.chains,
+      tvl_usd: p.tvl_usd,
+      mcap_usd: p.mcap_usd,
+      change_7d: p.change_7d,
+    }));
+}
+
+/** The protocols the board sets aside, with the reason each one is not ranked. */
+export function excludedRows(snapshot: Snapshot): ExcludedProtocol[] {
+  return snapshot.protocols
+    .filter((p) => exclusionReason(p) !== null)
+    .map((p) => ({ slug: p.slug, name: p.name, category: p.category, reason: exclusionReason(p)! }))
+    .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+}
+
+/** The exchange protocols, set aside with the live set: their token already trades. */
+export function cexRows(snapshot: Snapshot): LiveRow[] {
+  return snapshot.protocols
+    .filter((p) => !isPreToken(p) && p.category === 'CEX')
+    .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
     .map((p) => ({
       slug: p.slug,
       name: p.name,
@@ -518,14 +909,29 @@ export function radarRow(row: BoardRow): RadarRow {
     intercept: row.model.intercept,
     slope: row.model.slope,
     comparables: row.model.comparables,
+    sector_offset: row.model.sector_offset,
+    curve_value_usd: row.model.curve_value_usd,
+    implied_lo_usd: row.model.implied_lo_usd,
+    implied_hi_usd: row.model.implied_hi_usd,
+    deposit_usd: row.farm.deposit_usd,
+    slice_usd: row.farm.slice_usd,
+    gas_usd: row.farm.gas_usd,
+    tbill_usd: row.farm.tbill_usd,
+    net_usd: row.farm.net_usd,
+    break_even: row.farm.break_even,
+    per_hour_usd: row.farm.per_hour_usd,
+    hours: row.farm.hours,
+    verdict: row.farm.verdict,
   };
 }
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
   const calibration = calibrate(snapshot, model);
+  const board = buildBoard(snapshot, model, calibration);
   const live = liveRows(snapshot);
+  const excluded = excludedRows(snapshot);
+  const cex = cexRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -539,8 +945,17 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
+    ledger: {
+      total: snapshot.protocols.length,
+      ranked: board.length,
+      live: live.length,
+      cex: cex.length,
+      excluded: excluded.length,
+    },
     rows: board.map(radarRow),
     live,
+    excluded,
+    cex,
   };
   return { board, radar };
 }
