@@ -68,7 +68,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The version label the dashboard names and the rules quote. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 
 /** How much of a token's implied value the farm assumes goes to depositors, and the T-bill
  *  rate the deposit forgoes while it sits in the position. */
@@ -813,17 +813,17 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied: numb
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: `about $${first.toFixed(2)} of gas for the first transaction`,
+      cost: `about $${first.toFixed(2)} of gas on ${chain} for the first transaction`,
       time: '5 minutes',
     },
     {
       text: `${action} ${p.name} holds ${fmtUsd(p.tvl_usd)} of TVL, so the $${capital} is a small slice of it and can exit in one transaction.`,
-      cost: `$${capital} of capital and about $${first.toFixed(2)} of gas`,
+      cost: `$${capital} of capital and about $${first.toFixed(2)} of gas on ${chain}`,
       time: '15 minutes to set up',
     },
     {
       text: growthStep(p),
-      cost: `about $${first.toFixed(2)} of gas a week`,
+      cost: `about $${first.toFixed(2)} of gas on ${chain} a week`,
       time: '10 minutes a week',
     },
     {

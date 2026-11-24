@@ -337,6 +337,13 @@
     );
   }
 
+  /** The five FARM rows that pay best per hour of active work. */
+  function bestFarms() {
+    var f = DATA.rows.filter(function (r) { return r.verdict === 'FARM'; }).sort(function (a, b) { return b.per_hour_usd - a.per_hour_usd; }).slice(0, 5);
+    return el('div', { class: 'panel model' }, el('h2', { text: 'Best farms' }),
+      el('ol', { class: 'steps' }, f.map(function (r) { return el('li', { onclick: function () { openDetail(r.slug); }, style: 'cursor:pointer' }, el('b', { text: r.name }), el('span', { class: 'sub', text: ' ' + fmtDollars(r.net_usd) + ' net, ' + fmtDollars(r.per_hour_usd) + '/h' })); })));
+  }
+
   function controls() {
     var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).sort();
     var chainCounts = {};
@@ -598,11 +605,11 @@
         ),
         el('h3', { text: 'Calibration' }),
         el('div', { html: cal.calibration_svg }),
-        el('p', { class: 'sub', text: 'Each dot is one live protocol predicted from the other 118: green is within 2x of its true market cap, amber is further out. The diagonal is a perfect prediction, the dashed lines the 2x band.' }),
+        el('p', { class: 'sub', text: 'Each dot is one live protocol predicted from the other 118: green within 2x of its true market cap, amber further out. Diagonal: a perfect prediction; dashed lines: the 2x band.' }),
         el('h3', { text: 'What the farm assumes' }),
-        el('p', { class: 'sub', text: 'Deposit: the larger of TVL / 10,000 and three times the gas divided by the slice per dollar, between $500 and $5,000. Slice: 10% of the implied value goes to depositors, split pro-rata by TVL. Gas: $3.00 a transaction on Ethereum, $0.05 on Solana, $0.15 elsewhere. T-bill: 4% a year on the deposit. Verdict: FARM when the farm pays at 10% launch odds or less, MARGINAL at 25% or less, else SKIP; a farm is capped at MARGINAL when the 7-day TVL fell more than 30%. The deposit itself is not a cost: it comes back when the position unwinds.' }),
+        el('p', { class: 'sub', text: 'Deposit: the larger of TVL / 10,000 and three times the gas divided by the slice per dollar, between $500 and $5,000. Slice: 10% of the implied value, split pro-rata by TVL. Gas: $3.00 on Ethereum, $0.05 on Solana, $0.15 elsewhere. T-bill: 4% a year. Verdict: FARM at 10% launch odds or less, MARGINAL at 25% or less, else SKIP; capped at MARGINAL when 7-day TVL fell over 30%.' }),
         el('h3', { text: 'Weak parts, stated plainly' }),
-        el('p', { class: 'sub', text: 'Growth and age tilts were tested and dropped: each loses on leave-one-out. Most farms are SKIP (' + counts.SKIP + ' of ' + DATA.board_size + '): on the big protocols the slice is small next to the T-bill the deposit forgoes. The P25-P75 band is wide because the live market itself is noisy. A slice assumes depositors are paid pro-rata by TVL; activity-based rewards would pay an active farmer more. Implied value is an estimate, not a price.' }),
+        el('p', { class: 'sub', text: 'Growth and age tilts were tested and dropped: each loses on leave-one-out. Most farms are SKIP (' + counts.SKIP + ' of ' + DATA.board_size + '): on the big protocols the slice is small next to the T-bill the deposit forgoes. The P25-P75 band is wide because the live market is noisy. Implied value is an estimate, not a price.' }),
         el('h3', { text: 'The ledger: every protocol in the snapshot' }),
         el('p', { class: 'sub', text: String(ledger.total) + ' protocols: ' + ledger.ranked + ' ranked, ' + ledger.live + ' already trading, ' + ledger.cex + ' exchanges, ' + ledger.excluded + ' set aside with their reasons.' })
       )
@@ -618,7 +625,7 @@
       el('div', { class: 'formula' },
         'implied = round( exp( ', el('b', { text: String(cal.intercept) }), ' + ', el('b', { text: String(cal.slope) }), ' x ln(tvl_usd) + sector offset ) )'
       ),
-      el('p', { class: 'sub', text: 'The market does not pay a flat multiple for a dollar of TVL: the ratio falls as protocols grow, so a single median multiple overstates the giants and understates the small. The regression reads that size effect off the live market. At $100M of TVL the fitted ratio is ' + cal.ratio_at_100m + '; at $1B it is ' + cal.ratio_at_1b + '. The sector term is each category\u2019s median residual from the curve, shrunk by a pseudo-count of 8, so a category with one traded protocol barely moves its own rows. Growth and age tilts were tested and left out: each loses on leave-one-out, so the model keeps only TVL and the sector term.' }),
+      el('p', { class: 'sub', text: 'The market does not pay a flat multiple for a dollar of TVL: the ratio falls as protocols grow, so a single median multiple overstates the giants and understates the small. At $100M of TVL the fitted ratio is ' + cal.ratio_at_100m + '; at $1B it is ' + cal.ratio_at_1b + '. The sector term is each category\u2019s median residual from the curve, shrunk by a pseudo-count of 8, so a thin category barely moves its own rows. Growth and age tilts were tested and left out: each loses on leave-one-out, so the model keeps only TVL and the sector term.' }),
       el('table', { class: 'calib' },
         el('thead', null, el('tr', null, el('th', { text: 'Fit' }), el('th', { text: 'Value' }))),
         el('tbody', null,
@@ -774,7 +781,7 @@
     shell.appendChild(lede());
     shell.appendChild(kpiStrip());
     shell.appendChild(controls());
-    if (state.tab === 'pre-token') shell.appendChild(boardTable());
+    if (state.tab === 'pre-token') { shell.appendChild(bestFarms()); shell.appendChild(boardTable()); }
     else if (state.tab === 'live') shell.appendChild(liveTable());
     else if (state.tab === 'setaside') shell.appendChild(setAsideTable());
     else shell.appendChild(methodView());
