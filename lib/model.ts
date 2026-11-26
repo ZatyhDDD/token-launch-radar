@@ -68,7 +68,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The version label the dashboard names and the rules quote. */
-export const MODEL_VERSION = 'radar-7';
+export const MODEL_VERSION = 'radar-8';
 
 /** How much of a token's implied value the farm assumes goes to depositors, and the T-bill
  *  rate the deposit forgoes while it sits in the position. */
